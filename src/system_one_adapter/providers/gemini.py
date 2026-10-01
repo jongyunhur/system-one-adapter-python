@@ -6,6 +6,7 @@ from typing import Any
 
 from google.genai import Client
 from google.genai._gaos.lib import compat_errors
+from google.genai.interactions import ThinkingLevel
 from typesafe_sdk import TypeSafeError
 
 from system_one_adapter._utils.error_handling import map_provider_error
@@ -38,6 +39,7 @@ def _request_kwargs(
     schema: dict[str, Any],
     *,
     structured: bool,
+    thinking_level: ThinkingLevel | None = None,
 ) -> dict[str, Any]:
     system = "\n\n".join(message.content for message in messages if message.role == "system")
     conversation = [
@@ -55,6 +57,9 @@ def _request_kwargs(
     }
     if system:
         kwargs["system_instruction"] = system
+    # Thinking lives in generation_config on Interactions, unlike generateContent.
+    if thinking_level is not None:
+        kwargs["generation_config"] = {"thinking_level": thinking_level}
     if structured:
         kwargs["response_format"] = {
             "type": "text",
@@ -93,15 +98,25 @@ def _result(response: Any) -> ProviderResult:
 class GeminiProvider(_GeminiErrors):
     """Synchronously call the Gemini Interactions API."""
 
-    def __init__(self, model_name: str, *, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        api_key: str | None = None,
+        thinking_level: ThinkingLevel | None = None,
+    ) -> None:
         """Initialize the model and synchronous SDK client.
 
         Args:
             model_name: Gemini model to request.
             api_key: Gemini API key. Defaults to the SDK's own resolution,
                 including `GEMINI_API_KEY` and `GOOGLE_API_KEY`.
+            thinking_level: How much thinking the model should spend, as the
+                levels the installed SDK accepts (`"minimal"` through `"high"`).
+                Omitted by default, leaving the model's own default.
         """
         self.model_name = model_name
+        self.thinking_level = thinking_level
         self._client = Client(api_key=api_key)
         # Interactions interprets HttpRetryOptions.attempts as extra retries, unlike
         # generateContent. Disable its own retry policy so RetryPolicy owns all calls.
@@ -133,7 +148,7 @@ class GeminiProvider(_GeminiErrors):
                 complete, or the response omits usage.
         """
         with translating(self.translate_error):
-            kwargs = _request_kwargs(self.model_name, messages, schema, structured=structured)
+            kwargs = _request_kwargs(self.model_name, messages, schema, structured=structured, thinking_level=self.thinking_level)
             record_request(kwargs, api="interactions")
             response = self._client.interactions.create(**kwargs)
         return _result(response)
@@ -142,15 +157,25 @@ class GeminiProvider(_GeminiErrors):
 class AsyncGeminiProvider(_GeminiErrors):
     """Asynchronously call the Gemini Interactions API."""
 
-    def __init__(self, model_name: str, *, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        api_key: str | None = None,
+        thinking_level: ThinkingLevel | None = None,
+    ) -> None:
         """Initialize the model and asynchronous SDK client.
 
         Args:
             model_name: Gemini model to request.
             api_key: Gemini API key. Defaults to the SDK's own resolution,
                 including `GEMINI_API_KEY` and `GOOGLE_API_KEY`.
+            thinking_level: How much thinking the model should spend, as the
+                levels the installed SDK accepts (`"minimal"` through `"high"`).
+                Omitted by default, leaving the model's own default.
         """
         self.model_name = model_name
+        self.thinking_level = thinking_level
         self._client = Client(api_key=api_key)
         # See GeminiProvider: Interactions has a separate SDK retry policy.
         self._client.aio.interactions.sdk_configuration.retry_config = None
@@ -182,7 +207,7 @@ class AsyncGeminiProvider(_GeminiErrors):
                 complete, or the response omits usage.
         """
         with translating(self.translate_error):
-            kwargs = _request_kwargs(self.model_name, messages, schema, structured=structured)
+            kwargs = _request_kwargs(self.model_name, messages, schema, structured=structured, thinking_level=self.thinking_level)
             record_request(kwargs, api="interactions")
             response = await self._client.aio.interactions.create(**kwargs)
         return _result(response)

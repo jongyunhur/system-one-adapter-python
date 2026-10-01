@@ -5,6 +5,15 @@ icon: lucide/history
 
 # Changelog
 
+## Unreleased
+
+### Features
+
+- expose reasoning effort on every provider: `reasoning_effort=` on
+  `OpenAIProvider` / `AsyncOpenAIProvider`, `thinking=` on `AnthropicProvider` /
+  `AsyncAnthropicProvider`, and `thinking_level=` on `GeminiProvider` /
+  `AsyncGeminiProvider`
+
 ## v0.2.1 (2026-09-22)
 
 ### Bug fixes

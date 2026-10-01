@@ -9,12 +9,36 @@ from __future__ import annotations
 from typing import Any
 
 import anthropic
+from anthropic.types import ThinkingConfigParam
 from typesafe_sdk import TypeSafeError
 
 from system_one_adapter._utils.error_handling import map_provider_error
 from system_one_adapter.providers.base import Message, ProviderResult, record_request, record_response, translating
 
 _DEFAULT_MAX_TOKENS = 4096
+
+
+def _validate_thinking(thinking: ThinkingConfigParam | None, max_tokens: int) -> None:
+    """Reject a thinking budget the output limit cannot accommodate.
+
+    Args:
+        thinking: Extended-thinking configuration, or `None` to leave it unset.
+        max_tokens: The provider's configured output token limit.
+
+    Raises:
+        ValueError: An enabled thinking budget is not smaller than `max_tokens`.
+    """
+    if thinking is None or thinking.get("type") != "enabled":
+        return
+    # Thinking is spent from the same output budget as the answer, so a budget at or
+    # above the limit leaves no tokens for the JSON the client has to parse. The API
+    # rejects it too, but doing so here names both numbers and costs no request.
+    budget_tokens = thinking.get("budget_tokens")
+    if isinstance(budget_tokens, int) and budget_tokens >= max_tokens:
+        raise ValueError(
+            f"thinking budget_tokens ({budget_tokens}) must be below max_tokens ({max_tokens}), "
+            "which covers thinking and the answer together; raise max_tokens or lower budget_tokens."
+        )
 
 
 class _AnthropicErrors:
@@ -38,6 +62,7 @@ def _request_kwargs(
     *,
     structured: bool,
     max_tokens: int,
+    thinking: ThinkingConfigParam | None = None,
 ) -> dict[str, Any]:
     system = "\n\n".join(m.content for m in messages if m.role == "system")
     conversation = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
@@ -47,6 +72,8 @@ def _request_kwargs(
         "system": system,
         "messages": conversation,
     }
+    if thinking is not None:
+        kwargs["thinking"] = thinking
     if structured:
         kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
     return kwargs
@@ -72,20 +99,33 @@ def _result(response: Any) -> ProviderResult:
 class AnthropicProvider(_AnthropicErrors):
     """Synchronously call the Anthropic Messages API."""
 
-    def __init__(self, model_name: str, *, max_tokens: int = _DEFAULT_MAX_TOKENS) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        thinking: ThinkingConfigParam | None = None,
+    ) -> None:
         """Initialize the model, output limit, and synchronous SDK client.
 
         Args:
             model_name: Anthropic model to request.
             max_tokens: Maximum output tokens per request. Defaults to 4,096.
+            thinking: Extended-thinking configuration, as the Messages API takes
+                it: `{"type": "enabled", "budget_tokens": N}`, `{"type": "adaptive"}`
+                on SDKs that support it, or `{"type": "disabled"}`. Omitted by
+                default, leaving the model's own behavior.
 
         Raises:
-            ValueError: The output token limit is not positive.
+            ValueError: The output token limit is not positive, or an enabled
+                thinking budget is not smaller than it.
         """
         if max_tokens <= 0:
             raise ValueError("max_tokens must be > 0")
+        _validate_thinking(thinking, max_tokens)
         self.model_name = model_name
         self.max_tokens = max_tokens
+        self.thinking = thinking
         self._client = anthropic.Anthropic(max_retries=0)
 
     def close(self) -> None:
@@ -114,7 +154,9 @@ class AnthropicProvider(_AnthropicErrors):
                 output token limit.
         """
         with translating(self.translate_error):
-            kwargs = _request_kwargs(self.model_name, messages, schema, structured=structured, max_tokens=self.max_tokens)
+            kwargs = _request_kwargs(
+                self.model_name, messages, schema, structured=structured, max_tokens=self.max_tokens, thinking=self.thinking
+            )
             record_request(kwargs, api="messages")
             response = self._client.messages.create(**kwargs)
         return _result(response)
@@ -123,20 +165,33 @@ class AnthropicProvider(_AnthropicErrors):
 class AsyncAnthropicProvider(_AnthropicErrors):
     """Asynchronously call the Anthropic Messages API."""
 
-    def __init__(self, model_name: str, *, max_tokens: int = _DEFAULT_MAX_TOKENS) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        thinking: ThinkingConfigParam | None = None,
+    ) -> None:
         """Initialize the model, output limit, and asynchronous SDK client.
 
         Args:
             model_name: Anthropic model to request.
             max_tokens: Maximum output tokens per request. Defaults to 4,096.
+            thinking: Extended-thinking configuration, as the Messages API takes
+                it: `{"type": "enabled", "budget_tokens": N}`, `{"type": "adaptive"}`
+                on SDKs that support it, or `{"type": "disabled"}`. Omitted by
+                default, leaving the model's own behavior.
 
         Raises:
-            ValueError: The output token limit is not positive.
+            ValueError: The output token limit is not positive, or an enabled
+                thinking budget is not smaller than it.
         """
         if max_tokens <= 0:
             raise ValueError("max_tokens must be > 0")
+        _validate_thinking(thinking, max_tokens)
         self.model_name = model_name
         self.max_tokens = max_tokens
+        self.thinking = thinking
         self._client = anthropic.AsyncAnthropic(max_retries=0)
 
     async def aclose(self) -> None:
@@ -165,7 +220,9 @@ class AsyncAnthropicProvider(_AnthropicErrors):
                 output token limit.
         """
         with translating(self.translate_error):
-            kwargs = _request_kwargs(self.model_name, messages, schema, structured=structured, max_tokens=self.max_tokens)
+            kwargs = _request_kwargs(
+                self.model_name, messages, schema, structured=structured, max_tokens=self.max_tokens, thinking=self.thinking
+            )
             record_request(kwargs, api="messages")
             response = await self._client.messages.create(**kwargs)
         return _result(response)

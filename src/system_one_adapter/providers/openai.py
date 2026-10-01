@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import openai
+from openai.types import ReasoningEffort
 from typesafe_sdk import TypeSafeError
 
 from system_one_adapter._utils.error_handling import map_provider_error
@@ -53,7 +54,14 @@ def _result(response: Any) -> ProviderResult:
     )
 
 
-def _responses_request_kwargs(model_name: str, messages: list[Message], schema: dict[str, Any], *, structured: bool) -> dict[str, Any]:
+def _responses_request_kwargs(
+    model_name: str,
+    messages: list[Message],
+    schema: dict[str, Any],
+    *,
+    structured: bool,
+    reasoning_effort: ReasoningEffort = None,
+) -> dict[str, Any]:
     output_format = {"type": "json_schema", "name": "evaluation", "schema": schema, "strict": True} if structured else {"type": "json_object"}
     kwargs: dict[str, Any] = {
         "model": model_name,
@@ -61,6 +69,10 @@ def _responses_request_kwargs(model_name: str, messages: list[Message], schema: 
         "text": {"format": output_format},
         "store": False,
     }
+    # Omitted rather than sent as None: the Responses API rejects `reasoning` on models
+    # that do not reason, so an unset effort must not reach the request at all.
+    if reasoning_effort is not None:
+        kwargs["reasoning"] = {"effort": reasoning_effort}
     if structured:
         kwargs["instructions"] = "\n\n".join(message.content for message in messages if message.role == "system")
         kwargs["input"] = render_messages([message for message in messages if message.role != "system"])
@@ -100,6 +112,7 @@ class OpenAIProvider(_OpenAIErrors):
         base_url: str | None = None,
         api_key: str | None = None,
         api: Literal["responses", "chat_completions"] | None = None,
+        reasoning_effort: ReasoningEffort = None,
     ) -> None:
         """Initialize the model, endpoint, and synchronous SDK client.
 
@@ -111,6 +124,10 @@ class OpenAIProvider(_OpenAIErrors):
                 including `OPENAI_API_KEY`.
             api: `"responses"` or `"chat_completions"`. Defaults to Responses
                 for `api.openai.com` and Chat Completions for other hosts.
+            reasoning_effort: How much reasoning the model should spend, as the
+                effort levels the installed SDK accepts (`"minimal"` through
+                `"high"`, and `"none"` to disable reasoning). Omitted by default,
+                leaving the model's own default. Reasoning models only.
 
         Raises:
             ValueError: The API selector is unsupported.
@@ -118,6 +135,7 @@ class OpenAIProvider(_OpenAIErrors):
         if api not in (None, "responses", "chat_completions"):
             raise ValueError("api must be 'responses' or 'chat_completions'")
         self.model_name = model_name
+        self.reasoning_effort = reasoning_effort
         self._client = openai.OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
         self.api = api if api is not None else ("responses" if self._client.base_url.host == "api.openai.com" else "chat_completions")
 
@@ -148,7 +166,9 @@ class OpenAIProvider(_OpenAIErrors):
         """
         with translating(self.translate_error):
             if self.api == "responses":
-                kwargs = _responses_request_kwargs(self.model_name, messages, schema, structured=structured)
+                kwargs = _responses_request_kwargs(
+                    self.model_name, messages, schema, structured=structured, reasoning_effort=self.reasoning_effort
+                )
                 record_request(kwargs, api=self.api)
                 return _responses_result(self._client.responses.create(**kwargs))
             # The plain role/content dicts and response_format dict are valid runtime
@@ -158,6 +178,8 @@ class OpenAIProvider(_OpenAIErrors):
                 "messages": render_messages(messages),
                 "response_format": _response_format(schema, structured=structured),
             }
+            if self.reasoning_effort is not None:
+                kwargs["reasoning_effort"] = self.reasoning_effort
             record_request(kwargs, api=self.api)
             response = self._client.chat.completions.create(**kwargs)  # pyrefly: ignore[no-matching-overload]
         return _result(response)
@@ -173,6 +195,7 @@ class AsyncOpenAIProvider(_OpenAIErrors):
         base_url: str | None = None,
         api_key: str | None = None,
         api: Literal["responses", "chat_completions"] | None = None,
+        reasoning_effort: ReasoningEffort = None,
     ) -> None:
         """Initialize the model, endpoint, and asynchronous SDK client.
 
@@ -184,6 +207,10 @@ class AsyncOpenAIProvider(_OpenAIErrors):
                 including `OPENAI_API_KEY`.
             api: `"responses"` or `"chat_completions"`. Defaults to Responses
                 for `api.openai.com` and Chat Completions for other hosts.
+            reasoning_effort: How much reasoning the model should spend, as the
+                effort levels the installed SDK accepts (`"minimal"` through
+                `"high"`, and `"none"` to disable reasoning). Omitted by default,
+                leaving the model's own default. Reasoning models only.
 
         Raises:
             ValueError: The API selector is unsupported.
@@ -191,6 +218,7 @@ class AsyncOpenAIProvider(_OpenAIErrors):
         if api not in (None, "responses", "chat_completions"):
             raise ValueError("api must be 'responses' or 'chat_completions'")
         self.model_name = model_name
+        self.reasoning_effort = reasoning_effort
         self._client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
         self.api = api if api is not None else ("responses" if self._client.base_url.host == "api.openai.com" else "chat_completions")
 
@@ -221,7 +249,9 @@ class AsyncOpenAIProvider(_OpenAIErrors):
         """
         with translating(self.translate_error):
             if self.api == "responses":
-                kwargs = _responses_request_kwargs(self.model_name, messages, schema, structured=structured)
+                kwargs = _responses_request_kwargs(
+                    self.model_name, messages, schema, structured=structured, reasoning_effort=self.reasoning_effort
+                )
                 record_request(kwargs, api=self.api)
                 return _responses_result(await self._client.responses.create(**kwargs))
             # The plain role/content dicts and response_format dict are valid runtime
@@ -231,6 +261,8 @@ class AsyncOpenAIProvider(_OpenAIErrors):
                 "messages": render_messages(messages),
                 "response_format": _response_format(schema, structured=structured),
             }
+            if self.reasoning_effort is not None:
+                kwargs["reasoning_effort"] = self.reasoning_effort
             record_request(kwargs, api=self.api)
             response = await self._client.chat.completions.create(**kwargs)  # pyrefly: ignore[no-matching-overload]
         return _result(response)

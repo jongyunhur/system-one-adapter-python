@@ -1,10 +1,10 @@
 """Reasoning-effort options must reach each provider's request, and only when set.
 
-Each provider names the control its own API does — `reasoning_effort` for OpenAI,
-`thinking` for Anthropic, `thinking_level` for Gemini — so these tests check the
-request envelope per provider rather than a shared shape. The transport cases assert on
-the JSON that actually leaves the SDK, since an option that stops at the provider
-object would otherwise look configured while changing nothing.
+Each provider names the controls its own API does — `reasoning_effort` for OpenAI,
+`thinking` and `effort` for Anthropic, `thinking_level` for Gemini — so these tests
+check the request envelope per provider rather than a shared shape. The transport cases
+assert on the JSON that actually leaves the SDK, since an option that stops at the
+provider object would otherwise look configured while changing nothing.
 """
 
 import asyncio
@@ -162,6 +162,18 @@ def test_anthropic_request_carries_thinking(structured: bool) -> None:
     assert kwargs["max_tokens"] == 4096
 
 
+@pytest.mark.parametrize("structured", [False, True])
+def test_anthropic_request_carries_effort(structured: bool) -> None:
+    kwargs = anthropic_request_kwargs(
+        "claude-sonnet-5-5", MESSAGES, SCHEMA, structured=structured, max_tokens=4096, effort="low"
+    )
+    assert kwargs["output_config"]["effort"] == "low"
+    if structured:
+        assert kwargs["output_config"]["format"] == {"type": "json_schema", "schema": SCHEMA}
+    else:
+        assert set(kwargs["output_config"]) == {"effort"}
+
+
 @pytest.mark.parametrize("provider_class", [AnthropicProvider, AsyncAnthropicProvider])
 @pytest.mark.parametrize("budget_tokens", [4096, 8192])
 def test_anthropic_rejects_thinking_budget_above_output_limit(provider_class: Any, budget_tokens: int) -> None:
@@ -179,22 +191,29 @@ def test_anthropic_accepts_thinking_that_fits_the_output_limit(provider_class: A
 
 @pytest.mark.parametrize("provider_class", [AnthropicProvider, AsyncAnthropicProvider])
 def test_anthropic_provider_defaults_thinking_to_unset(provider_class: Any) -> None:
-    assert provider_class("claude-haiku-4-5").thinking is None
+    provider = provider_class("claude-haiku-4-5")
+    assert provider.thinking is None
+    assert provider.effort is None
 
 
 @pytest.mark.parametrize("provider_class", [AnthropicProvider, AsyncAnthropicProvider])
-@pytest.mark.parametrize("thinking", [None, {"type": "enabled", "budget_tokens": 1024}])
-def test_anthropic_transport_sends_thinking(
+@pytest.mark.parametrize(
+    "thinking,effort",
+    [(None, None), ({"type": "enabled", "budget_tokens": 1024}, None), ({"type": "adaptive"}, "low")],
+)
+def test_anthropic_transport_sends_reasoning_controls(
     http_requests: tuple[dict[str, Any], list[dict[str, Any]]],
     provider_class: Any,
     thinking: Any,
+    effort: str | None,
 ) -> None:
     payload, requests = http_requests
+    model_name = "claude-sonnet-5-5" if effort is not None else "claude-haiku-4-5"
     payload.update(
         id="message-test",
         type="message",
         role="assistant",
-        model="claude-haiku-4-5",
+        model=model_name,
         stop_reason="end_turn",
         # A thinking block precedes the answer whenever thinking is enabled.
         content=([{"type": "thinking", "thinking": "Weighing the review.", "signature": "sig"}] if thinking else [])
@@ -202,7 +221,7 @@ def test_anthropic_transport_sends_thinking(
         usage={"input_tokens": 12, "output_tokens": 7},
     )
 
-    response = _evaluate(provider_class("claude-haiku-4-5", thinking=thinking))
+    response = _evaluate(provider_class(model_name, thinking=thinking, effort=effort))
 
     assert response.nouls["positive"].noul == 1.0
     sent = requests[0]
@@ -210,6 +229,12 @@ def test_anthropic_transport_sends_thinking(
         assert "thinking" not in sent
     else:
         assert sent["thinking"] == thinking
+    if effort is None:
+        assert "effort" not in sent.get("output_config", {})
+    else:
+        assert sent["output_config"]["effort"] == effort
+        assert sent["output_config"]["format"]["type"] == "json_schema"
+        assert sent["output_config"]["format"]["schema"]["type"] == "object"
 
 
 def test_anthropic_result_reads_the_answer_past_thinking_blocks() -> None:
@@ -257,7 +282,7 @@ def test_gemini_provider_defaults_thinking_level_to_unset(provider_class: Any) -
 
 
 @pytest.mark.parametrize("provider_class", [GeminiProvider, AsyncGeminiProvider])
-@pytest.mark.parametrize("thinking_level", [None, "minimal", "high"])
+@pytest.mark.parametrize("thinking_level", [None, "low", "high"])
 def test_gemini_transport_sends_thinking_level(
     http_requests: tuple[dict[str, Any], list[dict[str, Any]]],
     provider_class: Any,

@@ -93,11 +93,11 @@ from system_one_adapter.providers.gemini import GeminiProvider
 from system_one_adapter.providers.openai import OpenAIProvider
 
 client.system_one(state, questions, model=OpenAIProvider("gpt-5-mini", reasoning_effort="low"))
-client.system_one(state, questions, model=GeminiProvider("gemini-3-flash", thinking_level="minimal"))
+client.system_one(state, questions, model=GeminiProvider("gemini-3.8-flash", thinking_level="low"))
 client.system_one(
     state,
     questions,
-    model=AnthropicProvider("claude-sonnet-4-5", max_tokens=8192, thinking={"type": "enabled", "budget_tokens": 4096}),
+    model=AnthropicProvider("claude-sonnet-5-5", max_tokens=8192, thinking={"type": "adaptive"}, effort="low"),
 )
 ```
 
@@ -105,12 +105,13 @@ The async providers accept the same options. Each is omitted from the request un
 set, leaving the model's own default, and the accepted values are whatever the installed
 provider SDK accepts: `reasoning_effort` takes OpenAI's effort levels (`"none"` through
 `"high"` and above), `thinking_level` takes Gemini's (`"minimal"` to `"high"`), and
-`thinking` takes Anthropic's configuration object.
+`thinking` takes Anthropic's configuration object. Anthropic's `effort` is sent as
+`output_config.effort`; supported levels and thinking modes vary by model.
 
 Anthropic spends thinking from the same budget as the answer, so `max_tokens` must leave
-room for both; a `budget_tokens` at or above `max_tokens` raises `ValueError` naming both
-numbers. Reasoning tokens are billed as output tokens and counted in
-`response.usage.output_tokens`.
+room for both. With manual extended thinking, a `budget_tokens` at or above `max_tokens`
+raises `ValueError` naming both numbers. Reasoning tokens are billed as output tokens
+and counted in `response.usage.output_tokens`.
 
 `reasoning_effort` is sent as `reasoning.effort` on the Responses API and as
 `reasoning_effort` on Chat Completions, so it also reaches OpenAI-compatible endpoints

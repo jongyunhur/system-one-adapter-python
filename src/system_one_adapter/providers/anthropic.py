@@ -6,7 +6,7 @@ only available on this native API and not through an OpenAI-compatible endpoint.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import anthropic
 from anthropic.types import ThinkingConfigParam
@@ -16,6 +16,7 @@ from system_one_adapter._utils.error_handling import map_provider_error
 from system_one_adapter.providers.base import Message, ProviderResult, record_request, record_response, translating
 
 _DEFAULT_MAX_TOKENS = 4096
+_AnthropicEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 def _validate_thinking(thinking: ThinkingConfigParam | None, max_tokens: int) -> None:
@@ -63,6 +64,7 @@ def _request_kwargs(
     structured: bool,
     max_tokens: int,
     thinking: ThinkingConfigParam | None = None,
+    effort: _AnthropicEffort | None = None,
 ) -> dict[str, Any]:
     system = "\n\n".join(m.content for m in messages if m.role == "system")
     conversation = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
@@ -74,8 +76,13 @@ def _request_kwargs(
     }
     if thinking is not None:
         kwargs["thinking"] = thinking
+    output_config: dict[str, Any] = {}
+    if effort is not None:
+        output_config["effort"] = effort
     if structured:
-        kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+        output_config["format"] = {"type": "json_schema", "schema": schema}
+    if output_config:
+        kwargs["output_config"] = output_config
     return kwargs
 
 
@@ -105,6 +112,7 @@ class AnthropicProvider(_AnthropicErrors):
         *,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
         thinking: ThinkingConfigParam | None = None,
+        effort: _AnthropicEffort | None = None,
     ) -> None:
         """Initialize the model, output limit, and synchronous SDK client.
 
@@ -115,6 +123,9 @@ class AnthropicProvider(_AnthropicErrors):
                 it: `{"type": "enabled", "budget_tokens": N}`, `{"type": "adaptive"}`
                 on SDKs that support it, or `{"type": "disabled"}`. Omitted by
                 default, leaving the model's own behavior.
+            effort: How much reasoning the model should spend, as one of `"low"`,
+                `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Omitted by default,
+                leaving the model's own effort. Support varies by model.
 
         Raises:
             ValueError: The output token limit is not positive, or an enabled
@@ -126,6 +137,7 @@ class AnthropicProvider(_AnthropicErrors):
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.thinking = thinking
+        self.effort = effort
         self._client = anthropic.Anthropic(max_retries=0)
 
     def close(self) -> None:
@@ -155,7 +167,13 @@ class AnthropicProvider(_AnthropicErrors):
         """
         with translating(self.translate_error):
             kwargs = _request_kwargs(
-                self.model_name, messages, schema, structured=structured, max_tokens=self.max_tokens, thinking=self.thinking
+                self.model_name,
+                messages,
+                schema,
+                structured=structured,
+                max_tokens=self.max_tokens,
+                thinking=self.thinking,
+                effort=self.effort,
             )
             record_request(kwargs, api="messages")
             response = self._client.messages.create(**kwargs)
@@ -171,6 +189,7 @@ class AsyncAnthropicProvider(_AnthropicErrors):
         *,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
         thinking: ThinkingConfigParam | None = None,
+        effort: _AnthropicEffort | None = None,
     ) -> None:
         """Initialize the model, output limit, and asynchronous SDK client.
 
@@ -181,6 +200,9 @@ class AsyncAnthropicProvider(_AnthropicErrors):
                 it: `{"type": "enabled", "budget_tokens": N}`, `{"type": "adaptive"}`
                 on SDKs that support it, or `{"type": "disabled"}`. Omitted by
                 default, leaving the model's own behavior.
+            effort: How much reasoning the model should spend, as one of `"low"`,
+                `"medium"`, `"high"`, `"xhigh"`, or `"max"`. Omitted by default,
+                leaving the model's own effort. Support varies by model.
 
         Raises:
             ValueError: The output token limit is not positive, or an enabled
@@ -192,6 +214,7 @@ class AsyncAnthropicProvider(_AnthropicErrors):
         self.model_name = model_name
         self.max_tokens = max_tokens
         self.thinking = thinking
+        self.effort = effort
         self._client = anthropic.AsyncAnthropic(max_retries=0)
 
     async def aclose(self) -> None:
@@ -221,7 +244,13 @@ class AsyncAnthropicProvider(_AnthropicErrors):
         """
         with translating(self.translate_error):
             kwargs = _request_kwargs(
-                self.model_name, messages, schema, structured=structured, max_tokens=self.max_tokens, thinking=self.thinking
+                self.model_name,
+                messages,
+                schema,
+                structured=structured,
+                max_tokens=self.max_tokens,
+                thinking=self.thinking,
+                effort=self.effort,
             )
             record_request(kwargs, api="messages")
             response = await self._client.messages.create(**kwargs)
